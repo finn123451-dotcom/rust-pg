@@ -1,0 +1,29 @@
+[package]
+name = "heap-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Heap Engine Team"]
+description = "PostgreSQL-compatible heap storage engine in Rust"
+
+[dependencies]
+bitvec = "1.0"
+byteorder = "1.4"
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[lib]
+name = "heap_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "heap-engine"
+path = "src/main.rs"
+
+[features]
+default = []
+testing = []
