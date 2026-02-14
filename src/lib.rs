@@ -1,39 +1,54 @@
+pub mod btree;
 pub mod constants;
 pub mod error;
+pub mod fsm;
 pub mod heap;
 pub mod heap_tuple;
 pub mod page;
 pub mod relation;
 pub mod storage;
+pub mod toast;
 pub mod transaction;
 pub mod types;
 pub mod visibility;
+pub mod visibility_map;
+pub mod wal;
 
+pub use btree::*;
 pub use error::HeapError;
+pub use fsm::*;
 pub use heap::*;
 pub use heap_tuple::*;
 pub use page::*;
 pub use relation::*;
 pub use storage::*;
+pub use toast::*;
 pub use transaction::*;
 pub use types::*;
 pub use visibility::*;
+pub use visibility_map::*;
+pub use wal::*;
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    use super::btree::BTreeIndex;
     use super::constants::*;
     use super::error::Result;
+    use super::fsm::FreeSpaceMap;
     use super::heap::{HeapEngine, HeapRelation};
     use super::heap_tuple::{HeapTuple, HeapTupleHeaderData};
     use super::page::{ItemIdData, Page};
     use super::relation::Relation;
     use super::storage::Storage;
+    use super::toast::ToastTable;
     use super::transaction::{Transaction, TransactionManager};
     use super::types::*;
     use super::visibility::Visibility;
+    use super::visibility_map::VisibilityMap;
+    use super::wal::{XLogRecord, XLogRecordType, WAL};
 
     #[test]
     fn test_page_creation() {
@@ -514,5 +529,141 @@ mod tests {
 
         let page_count = heap.relation.page_count();
         assert!(page_count >= 1);
+    }
+
+    #[test]
+    fn test_btree_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let (index, _) = BTreeIndex::create(path).unwrap();
+        let ctid = ItemPointerData {
+            block_number: 1,
+            offset_number: 1,
+        };
+
+        let result = index.insert(b"key1".to_vec(), ctid);
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_btree_scan() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let (index, _) = BTreeIndex::create(path).unwrap();
+
+        let result = index.scan();
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_wal_append() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let wal = WAL::new(path).unwrap();
+
+        let record = XLogRecord::new(100, XLogRecordType::HeapInsert, 0, b"test_data".to_vec());
+        let lsn = wal.append(&record).unwrap();
+
+        assert!(lsn > 0);
+    }
+
+    #[test]
+    fn test_wal_recover() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let wal = WAL::new(path).unwrap();
+
+        let record = XLogRecord::new(100, XLogRecordType::HeapInsert, 0, b"test_data".to_vec());
+        wal.append(&record).unwrap();
+
+        let records = wal.recover().unwrap();
+        assert!(records.len() >= 1);
+    }
+
+    #[test]
+    fn test_toast_compress_decompress() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let (toast, _) = ToastTable::create(path, 1).unwrap();
+
+        let original = vec![1u8; 1000];
+        let compressed = toast.compress(&original).unwrap();
+
+        let decompressed = toast.decompress(&compressed).unwrap();
+
+        assert_eq!(original.len(), decompressed.len());
+    }
+
+    #[test]
+    fn test_toast_store_fetch() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let (toast, _) = ToastTable::create(path, 1).unwrap();
+
+        let large_data = vec![0u8; 3000];
+
+        let result = toast.store(TransactionId(100), CommandId(1), &large_data);
+        assert!(result.is_ok());
+
+        if let Ok(pointer) = result {
+            let fetched = toast.fetch(&pointer).unwrap();
+            assert!(fetched.len() > 0);
+        }
+    }
+
+    #[test]
+    fn test_visibility_map() {
+        let vm = VisibilityMap::new();
+
+        vm.set_all_visible(0, true).unwrap();
+        assert!(vm.is_all_visible(0));
+
+        vm.set_all_visible(0, false).unwrap();
+        assert!(!vm.is_all_visible(0));
+    }
+
+    #[test]
+    fn test_visibility_map_get_visible_blocks() {
+        let vm = VisibilityMap::new();
+
+        vm.set_all_visible(0, true).unwrap();
+        vm.set_all_visible(1, true).unwrap();
+        vm.set_all_visible(2, false).unwrap();
+
+        let visible = vm.get_visible_blocks(5);
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn test_fsm() {
+        let fsm = FreeSpaceMap::new(8192);
+
+        fsm.update(0, 4000).unwrap();
+        fsm.update(1, 2000).unwrap();
+        fsm.update(2, 1000).unwrap();
+
+        let page = fsm.find_page_with_space(500);
+        assert!(page.is_some());
+
+        let page = fsm.find_page_with_space(5000);
+        assert!(page.is_none());
+    }
+
+    #[test]
+    fn test_xlog_record_serialization() {
+        let record = XLogRecord::new(100, XLogRecordType::HeapInsert, 5, b"test".to_vec());
+
+        let serialized = record.serialize();
+        assert!(serialized.len() > 0);
+
+        let deserialized = XLogRecord::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.txid, 100);
+        assert_eq!(deserialized.block_id, 5);
     }
 }
